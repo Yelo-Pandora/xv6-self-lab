@@ -63,6 +63,7 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+uint64 		kfreemem(void);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -176,6 +177,9 @@ void            plicinit(void);
 void            plicinithart(void);
 int             plic_claim(void);
 void            plic_complete(int);
+
+//proc.c
+int nproc_running(void);
 
 // virtio_disk.c
 void            virtio_disk_init(void);
