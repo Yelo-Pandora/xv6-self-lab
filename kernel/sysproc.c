@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+pte_t *walk(pagetable_t, uint64, int);
 
 uint64
 sys_exit(void)
@@ -75,16 +76,6 @@ sys_sleep(void)
   return 0;
 }
 
-
-#ifdef LAB_PGTBL
-int
-sys_pgaccess(void)
-{
-  // lab pgtbl: your code here.
-  return 0;
-}
-#endif
-
 uint64
 sys_kill(void)
 {
@@ -106,4 +97,38 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+#define MAXPG 64   // check maximum 64 pages at a time
+uint64
+sys_pgaccess(void)
+{
+  uint64 base;
+  int npages;
+  uint64 umask;
+
+  argaddr(0, &base);
+  argint(1, &npages);
+  argaddr(2, &umask);
+
+  if(npages <= 0 || npages > MAXPG)
+    return -1;
+
+  struct proc *p = myproc();
+  uint64 mask = 0;
+
+  for(int i = 0; i < npages; i++){
+    pte_t *pte = walk(p->pagetable, base + i*PGSIZE, 0);
+    if(pte == 0)
+      return -1;
+    if(*pte & PTE_A){
+      mask |= (1UL << i);
+      *pte &= ~PTE_A;   // reset
+    }
+  }
+
+  if(copyout(p->pagetable, umask, (char*)&mask, sizeof(mask)) < 0)
+    return -1;
+
+  return 0;
 }
