@@ -1,0 +1,19 @@
+1. Function arguments are passed in registers a0 through a7. In main's call to printf, a0 contains the address of the format string, a1 contains 12, and a2 contains 13. Therefore, 13 is stored in register a2.
+
+2. There is no call to f() or g() in the assembly code for main. The compiler inlined both functions and directly calculated f(8)+1 as 12, which is loaded into a1 by the instruction:
+
+li a1, 12
+
+3. printf is located at address 0x0000000000000638.
+
+4. The jalr instruction that calls printf is located at address 0x34. After it executes, ra contains the address of the next instruction, which is 0x0000000000000038.
+
+5. The program prints:
+
+He110 World
+
+57616 is 0xe110 in hexadecimal. Since RISC-V is little-endian, i = 0x00646c72 is stored in memory as the bytes 72 6c 64 00, which represent the string "rld".
+
+On a big-endian machine, i should be set to 0x726c6400 to produce the same output. The value 57616 does not need to change because it represents the same integer value regardless of byte order.
+
+6. The value printed after y= is unpredictable. The format string requires two integer arguments, but only one integer argument is passed. printf therefore reads whatever value happens to remain in register a2.
