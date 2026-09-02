@@ -1,0 +1,37 @@
+ANSWERS TO thread.html
+
+Q: Why are there missing keys with 2 threads, but not with 1 thread?
+   Identify a sequence of events with 2 threads that can lead to a key
+   being missing.
+
+A: The problem is a lost update in insert(), caused by two threads
+   executing put() on keys that hash to the same bucket i without any
+   locking. insert() does two separate writes:
+
+     e->next = n;   // link the new node to the current head of bucket i
+     *p = e;        // make the new node the head of bucket i
+
+   Suppose thread A executes put(kA) and thread B executes put(kB),
+   where kA % NBUCKET == kB % NBUCKET == i (same bucket), and the
+   current head of bucket i is h. The following interleaving loses kB:
+
+     1. A searches bucket i for kA, doesn't find it.          (put)
+     2. B searches bucket i for kB, doesn't find it.          (put)
+     3. A: insert(kA) sets nodeA->next = h.                   (e->next = n)
+     4. B: insert(kB) sets nodeB->next = h,                   (e->next = n)
+        because table[i] is still h: A has not yet written back
+        its new head.
+     5. B: table[i] = nodeB.                                  (*p = e)
+        Bucket list is now nodeB -> h.
+     6. A: table[i] = nodeA.                                  (*p = e)
+        Bucket list is now nodeA -> h.
+
+   After step 6 nodeB is no longer reachable from the bucket list:
+   A's head-pointer write in step 6 overwrote B's write in step 5.
+   kB was inserted but is lost, so a later get(kB) reports it as
+   missing.
+
+   With only 1 thread this cannot happen because there is nothing to
+   interleave with: each put() runs insert() to completion (both
+   writes) before the next put() starts, so every head-pointer update
+   is built on the previous one and no update is lost.

@@ -22,15 +22,25 @@ barrier_init(void)
   bstate.nthread = 0;
 }
 
-static void 
+static void
 barrier()
 {
-  // YOUR CODE HERE
-  //
-  // Block until all threads have called barrier() and
-  // then increment bstate.round.
-  //
-  
+  pthread_mutex_lock(&bstate.barrier_mutex);
+
+  int my_round = bstate.round;   // 当前轮次快照
+  bstate.nthread++;              // 用 nthread 当“本轮计数器”
+
+  if (bstate.nthread == nthread) {
+    // 本轮到齐
+    bstate.round++;              // 开启下一轮
+    bstate.nthread = 0;          // 计数器清零
+    pthread_cond_broadcast(&bstate.barrier_cond);
+  } else {
+    while (my_round == bstate.round)
+      pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
+  }
+
+  pthread_mutex_unlock(&bstate.barrier_mutex);
 }
 
 static void *
