@@ -85,6 +85,8 @@ argstr(int n, char *buf, int max)
 
 extern uint64 sys_chdir(void);
 extern uint64 sys_close(void);
+extern uint64 sys_mmap(void);
+extern uint64 sys_munmap(void);
 extern uint64 sys_dup(void);
 extern uint64 sys_exec(void);
 extern uint64 sys_exit(void);
@@ -127,6 +129,8 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_mmap]    sys_mmap,
+[SYS_munmap]  sys_munmap,
 };
 
 void

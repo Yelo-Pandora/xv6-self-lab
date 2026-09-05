@@ -82,6 +82,20 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+// Per-process memory-mapped file region (mmap lab).
+// Pages are allocated lazily on fault; the VMA holds a reference
+// to the file so the mapping stays valid after close(fd).
+#define NVMA 16
+struct vmarea {
+  int used;                 // slot in use
+  uint64 addr;              // start address, page aligned
+  uint64 len;               // length, multiple of PGSIZE
+  int prot;                 // PROT_READ/WRITE/EXEC
+  int flags;                // MAP_SHARED/MAP_PRIVATE
+  uint offset;              // offset in file
+  struct file *f;           // mapped file (holds a reference)
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -104,5 +118,6 @@ struct proc {
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
+  struct vmarea vma[NVMA];     // Memory-mapped regions (mmap lab)
   char name[16];               // Process name (debugging)
 };

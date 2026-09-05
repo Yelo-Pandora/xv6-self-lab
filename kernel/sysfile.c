@@ -8,6 +8,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "param.h"
+#include "memlayout.h"
 #include "stat.h"
 #include "spinlock.h"
 #include "proc.h"
@@ -483,4 +484,249 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+//
+// mmap lab: memory-mapped files.
+//
+// mmap records the mapping in a VMA but allocates no memory; pages
+// are allocated and filled from the file on demand in
+// mmap_page_fault(). munmap (and exit/exec) unmap the pages,
+// writing modified MAP_SHARED pages back to the file.
+//
+
+// Find the VMA containing va, or 0.
+static struct vmarea*
+vma_find(struct proc *p, uint64 va)
+{
+  for(int i = 0; i < NVMA; i++)
+    if(p->vma[i].used && va >= p->vma[i].addr && va < p->vma[i].addr + p->vma[i].len)
+      return &p->vma[i];
+  return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  int length, prot, flags, fd, offset;
+  struct proc *p = myproc();
+  struct file *f;
+  uint64 len, addr, lo;
+  struct vmarea *v = 0;
+
+  // the address argument must be 0: the kernel chooses the address
+  if(argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 ||
+     argint(4, &fd) < 0 || argint(5, &offset) < 0)
+    return -1;
+
+  if(length <= 0)
+    return -1;
+  if(prot & ~(PROT_READ|PROT_WRITE|PROT_EXEC))
+    return -1;
+  // exactly one of MAP_SHARED and MAP_PRIVATE
+  if(!(flags & MAP_SHARED) == !(flags & MAP_PRIVATE))
+    return -1;
+  if(fd < 0 || fd >= NOFILE || (f = p->ofile[fd]) == 0 || f->type != FD_INODE)
+    return -1;
+  // a shared mapping that can be written requires a writable file
+  if((prot & PROT_WRITE) && (flags & MAP_SHARED) && !f->writable)
+    return -1;
+
+  for(int i = 0; i < NVMA; i++)
+    if(!p->vma[i].used){
+      v = &p->vma[i];
+      break;
+    }
+  if(v == 0)
+    return -1;
+
+  len = PGROUNDUP(length);
+
+  // place the mapping just below the lowest existing mapping,
+  // top-down from the trapframe page.
+  lo = TRAPFRAME;
+  for(int i = 0; i < NVMA; i++)
+    if(p->vma[i].used && p->vma[i].addr < lo)
+      lo = p->vma[i].addr;
+  addr = lo - len;
+  if(addr < p->sz)
+    return -1;
+
+  v->used = 1;
+  v->addr = addr;
+  v->len = len;
+  v->prot = prot;
+  v->flags = flags;
+  v->offset = offset;
+  v->f = filedup(f);
+
+  return addr;
+}
+
+// Unmap the pages of VMA v covering [a, a+len). Frees physical pages.
+// If the mapping is MAP_SHARED, writes dirty pages back to the file
+// (only the part of each page that lies within the file).
+// The VMA itself is not modified.
+static void
+vma_unmap_pages(struct proc *p, struct vmarea *v, uint64 a, uint64 len)
+{
+  pte_t *pte;
+  uint64 pa, va, off, n;
+  struct inode *ip = v->f->ip;
+
+  for(va = a; va < a + len; va += PGSIZE){
+    if((pte = walk(p->pagetable, va, 0)) == 0 || (*pte & PTE_V) == 0)
+      continue;
+    pa = PTE2PA(*pte);
+    if((v->flags & MAP_SHARED) && (*pte & PTE_D)){
+      off = v->offset + (va - v->addr);
+      if(off < ip->size){
+        n = ip->size - off;
+        if(n > PGSIZE)
+          n = PGSIZE;
+        begin_op();
+        ilock(ip);
+        writei(ip, 0, pa, off, n);
+        iunlock(ip);
+        end_op();
+      }
+    }
+    kfree((void*)pa);
+    *pte = 0;
+  }
+  // stale TLB entries may still point at the freed pages
+  sfence_vma();
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  uint64 len, n;
+  struct proc *p = myproc();
+  struct vmarea *v;
+
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0)
+    return -1;
+  if(addr % PGSIZE != 0 || length <= 0)
+    return -1;
+  len = PGROUNDUP(length);
+
+  if((v = vma_find(p, addr)) == 0)
+    return -1;
+
+  // clamp to the VMA
+  n = v->addr + v->len - addr;
+  if(n > len)
+    n = len;
+
+  // unmapping a middle hole splits the VMA; find the slot first
+  // so we can fail before destroying anything.
+  if(addr != v->addr && addr + n != v->addr + v->len){
+    int i, free = 0;
+    for(i = 0; i < NVMA; i++)
+      if(!p->vma[i].used){
+        free = 1;
+        break;
+      }
+    if(!free)
+      return -1;
+  }
+
+  vma_unmap_pages(p, v, addr, n);
+
+  if(addr == v->addr){
+    // unmaps the beginning (or all) of the VMA
+    v->addr += n;
+    v->offset += n;
+    v->len -= n;
+  } else if(addr + n == v->addr + v->len){
+    // unmaps the end of the VMA
+    v->len -= n;
+  } else {
+    // hole in the middle: split into a new VMA for the tail
+    for(int i = 0; i < NVMA; i++){
+      if(!p->vma[i].used){
+        struct vmarea *t = &p->vma[i];
+        t->used = 1;
+        t->addr = addr + n;
+        t->len = v->addr + v->len - (addr + n);
+        t->prot = v->prot;
+        t->flags = v->flags;
+        t->offset = v->offset + (addr + n - v->addr);
+        t->f = filedup(v->f);
+        break;
+      }
+    }
+    v->len = addr - v->addr;
+  }
+
+  if(v->len == 0){
+    fileclose(v->f);
+    v->f = 0;
+    v->used = 0;
+  }
+  return 0;
+}
+
+// Handle a load (write==0) or store (write==1) page fault at va.
+// Allocates a page, fills it from the file, and maps it.
+// Returns 0 if the fault was handled, -1 otherwise (not an mmap
+// page, or the access is not permitted).
+int
+mmap_page_fault(struct proc *p, uint64 va, int write)
+{
+  struct vmarea *v;
+  pte_t *pte;
+  char *mem;
+  int perm = PTE_R | PTE_U;
+
+  if((v = vma_find(p, va)) == 0)
+    return -1;
+  if(write && !(v->prot & PROT_WRITE))
+    return -1;
+  if(!write && !(v->prot & (PROT_READ|PROT_EXEC)))
+    return -1;
+  if((pte = walk(p->pagetable, va, 0)) != 0 && (*pte & PTE_V) != 0)
+    return -1;  // already mapped; shouldn't fault
+
+  mem = kalloc();
+  if(mem == 0)
+    return -1;
+  memset(mem, 0, PGSIZE);
+
+  // fill the page from the file; bytes past the end of the file
+  // read as zeros (readi clamps to the file size)
+  ilock(v->f->ip);
+  readi(v->f->ip, 0, (uint64)mem, v->offset + (va - v->addr), PGSIZE);
+  iunlock(v->f->ip);
+
+  if(v->prot & PROT_WRITE)
+    perm |= PTE_W;
+  if(v->prot & PROT_EXEC)
+    perm |= PTE_X;
+
+  if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, perm) != 0){
+    kfree(mem);
+    return -1;
+  }
+  return 0;
+}
+
+// Release all VMAs of p: write back shared dirty pages, free the
+// mapped pages, and close the files. Called from exit() and from
+// exec() after the old address space is replaced.
+void
+exitmmap(struct proc *p)
+{
+  for(int i = 0; i < NVMA; i++){
+    struct vmarea *v = &p->vma[i];
+    if(v->used){
+      vma_unmap_pages(p, v, v->addr, v->len);
+      fileclose(v->f);
+      v->f = 0;
+      v->used = 0;
+    }
+  }
 }

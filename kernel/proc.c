@@ -157,6 +157,9 @@ freeproc(struct proc *p)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
   p->sz = 0;
+  // VMAs should already have been released by exitmmap(); clear any
+  // leftovers so a reused proc slot starts clean.
+  memset(p->vma, 0, sizeof(p->vma));
   p->pid = 0;
   p->parent = 0;
   p->name[0] = 0;
@@ -301,6 +304,14 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // copy mmap regions; the child faults in its own copies of the
+  // pages lazily.
+  for(i = 0; i < NVMA; i++)
+    if(p->vma[i].used){
+      np->vma[i] = p->vma[i];
+      filedup(p->vma[i].f);
+    }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -352,6 +363,10 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
+
+  // Write back and remove mmap regions. Must happen before the
+  // page table is freed, so that no mapped pages are left in it.
+  exitmmap(p);
 
   begin_op();
   iput(p->cwd);
